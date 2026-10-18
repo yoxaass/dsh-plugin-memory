@@ -182,3 +182,38 @@ test('screen points map to graph points through the current view', () => {
   assert.ok(Math.abs(centre.x - 280) < 1e-6)
   assert.ok(Math.abs(centre.y - 170) < 1e-6)
 })
+
+test('a supersession is drawn as an arrow into the page that replaced it', () => {
+  const seam = loadClient()
+  const withSupersession = {
+    nodes: [
+      {
+        id: 'old.md', label: '旧', type: 'decision', tags: [], degree: 1, x: 100, y: 100, r: 8, color: '#4c8bf5',
+        superseded: true, invalidAt: '2026-10-18', supersededBy: 'new.md',
+      },
+      { id: 'new.md', label: '新', type: 'decision', tags: [], degree: 1, x: 200, y: 100, r: 8, color: '#4c8bf5' },
+    ],
+    edges: [{ source: 'old.md', target: 'new.md', kind: 'supersede', weight: 1, directed: true }],
+    stats: { pages: 2, links: 0, tagEdges: 0, supersedeEdges: 1, isolated: [] },
+  }
+  const tree = seam.GraphView({ graph: withSupersession })
+  const lines = findAll(tree, 'line')
+  assert.equal(lines.length, 1)
+  assert.equal(lines[0].props.markerEnd, 'url(#dsh-memory-supersede-arrow)')
+  assert.equal(findAll(tree, 'marker').length, 1, 'the arrowhead must be defined or the reference dangles')
+  // Head stops short of the successor's dot instead of hiding underneath it.
+  assert.ok(lines[0].props.x2 < 200)
+  assert.equal(lines[0].props.y2, 100)
+
+  // The dead page keeps its place on the map, but stops looking like live memory.
+  const oldDot = findAll(tree, 'circle').find((circle) => circle.props.cx === 100)
+  assert.equal(oldDot.props.strokeDasharray, '2 2')
+  assert.equal(oldDot.props.stroke, '#f5a623')
+})
+
+test('without a supersession nothing changes: no defs, no arrow, no legend', () => {
+  const seam = loadClient()
+  const tree = seam.GraphView({ graph })
+  assert.equal(findAll(tree, 'marker').length, 0)
+  for (const line of findAll(tree, 'line')) assert.equal(line.props.markerEnd, undefined)
+})

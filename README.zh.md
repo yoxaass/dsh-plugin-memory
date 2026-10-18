@@ -44,9 +44,10 @@ dsh plugin --profile <profile> add dsh-plugin-memory
 - **index 自动整理（声明式编译）**：索引行不再手写。页面在 frontmatter 里声明 `summary:`，`dsh-memory index --write` 把行重写为它的投影（标签 ≤32 / 摘要 ≤48 / 整行 ≤132 字符），**只改行内容，分节与顺序逐字节保留**，且幂等。`index --check` 给机器判定（有漂移退出码非 0），`index --sync-frontmatter` 把已写在 index 里的摘要回填进页面（老库一次性迁移）。digest 提醒会在索引漂移时附一句提示，agent 顺手就能修。
 - **互链成为默认动作**：`index.md` 是目录（谁存在），页间互链才是**关系**（谁和谁有关）——实测一个真实记忆库里 29 页只有 1 条真互链，而图谱与跨页综合全都建立在这层关系上。现在三处一起推：`skills/memory.md` 的 remember 流程、`MEMORY.md` 模板的工作流、以及 digest 提醒的收尾指令，都明确要求"给这次碰过的页面各补 1–3 条相关页链接"。
 - **补链建议**：`dsh-memory graph --suggest` 列出「只有索引入口、没有任何内容关系」的页面该引用谁——按共享主题 tag、标题词、同类型打分，并说明理由（`共享 #dsh` / `标题词 dsh` / `同类型`）。只报告不写入：是否连、怎么连由 agent 决定。`GET /api/memory/graph?suggest=1` 同源。
-- **记忆图谱**：设置页里一张只读关系图 —— 不只是 `index.md` 那种"索引连着所有页"的星形，而是把页面**已经编码但没人画出来**的关系画出来：**索引路由**（`index.md` 指向每一页——这是全库最大的边集，43 条；先前版本跳过了元文件，导致 index 在图上孤立无援）、页间显式 markdown 链接（含相对路径解析）、共享 frontmatter tag（通用容器 tag 如 `project`/`skill` 会被忽略，稠密 tag 走锚点链而非全连接）。坐标由服务端 `lib/graph-layout.js` 一次性算好（确定性、无随机、无依赖），客户端只负责画 SVG。**可交互**：滚轮缩放（以光标为中心，缩放范围 0.4×–2.5×，非 passive 监听所以不会连带滚动设置页）、拖空白处平移、`重置视图` 回到全图；按住节点即可拖走，直接邻居按距离轻微跟随，松手后带缓动滑回原布局——拖动期间暂停过渡做到 1:1 跟手，用 O(邻居数) 的局部松弛而不是逐帧全量力导向（后者在几百页时会卡）。悬停高亮邻里，首次渲染从中心绽开（尊重 `prefers-reduced-motion`）。图谱**每 25 秒自动刷新**（面板开着时记忆变更会自己出现，副标题显示「更新于 HH:MM:SS」）；取数失败保留上一张图而不是清空。视图数学（`zoomAt`/`panBy`/`toGraphPoint`）在 `lib/graph-view.js` 里是纯函数并有测试——缩放中心不漂移这件事必须被钉住。`GET /api/memory/graph`（只读、实时，`?types=1` 追加同类型弱边）。三类边在图上可区分：页间互链＝实线蓝、索引路由＝灰色虚线、共享 tag＝细线。
+- **记忆图谱**：设置页里一张只读关系图 —— 不只是 `index.md` 那种"索引连着所有页"的星形，而是把页面**已经编码但没人画出来**的关系画出来：**索引路由**（`index.md` 指向每一页——这是全库最大的边集，43 条；先前版本跳过了元文件，导致 index 在图上孤立无援）、页间显式 markdown 链接（含相对路径解析）、共享 frontmatter tag（通用容器 tag 如 `project`/`skill` 会被忽略，稠密 tag 走锚点链而非全连接）。坐标由服务端 `lib/graph-layout.js` 一次性算好（确定性、无随机、无依赖），客户端只负责画 SVG。**可交互**：滚轮缩放（以光标为中心，缩放范围 0.4×–2.5×，非 passive 监听所以不会连带滚动设置页）、拖空白处平移、`重置视图` 回到全图；按住节点即可拖走，直接邻居按距离轻微跟随，松手后带缓动滑回原布局——拖动期间暂停过渡做到 1:1 跟手，用 O(邻居数) 的局部松弛而不是逐帧全量力导向（后者在几百页时会卡）。悬停高亮邻里，首次渲染从中心绽开（尊重 `prefers-reduced-motion`）。图谱**每 25 秒自动刷新**（面板开着时记忆变更会自己出现，副标题显示「更新于 HH:MM:SS」）；取数失败保留上一张图而不是清空。视图数学（`zoomAt`/`panBy`/`toGraphPoint`）在 `lib/graph-view.js` 里是纯函数并有测试——缩放中心不漂移这件事必须被钉住。`GET /api/memory/graph`（只读、实时，`?types=1` 追加同类型弱边）。三类边在图上可区分：页间互链＝实线蓝、索引路由＝灰色虚线、共享 tag＝细线；若页面声明了作废关系（`superseded_by`），再多一条**琥珀色带箭头的虚线**，从旧页指向取代它的新页，旧页本身标灰虚线圈。
+- **有效期与作废关系（推翻旧结论时不再覆盖）**：给页面加三个**可选**字段——`valid_from`（从哪天成立）、`invalid_at`（哪天失效）、`superseded_by`（被哪页取代）。旧页留在库里当证据，图谱上标灰并画一条**琥珀色箭头**指向取代它的页；`dsh-memory supersede <旧页> <新页>` 一条命令写全（只写旧页，反向关系由 `superseded_by` 推出，一条关系一个真相来源），`lint` / `checkup` / 看板都会拦住"只写一半"的关系。全部可选，老库零改动。
 - **`dsh-memory checkup`**：把四个读者（lint 的完整性、status 的计数、看板的体量与新鲜度、graph 的关系）合成**一份带优先级的报告** —— 体量、新鲜度条形图、连接度、一致性检查，最后给出"最该做的 N 件事"。四个数字是诊断，"做这三件事"才是产品。有活干时退出码非 0，可被脚本消费。`--boot=N` 用于按你的 boot 预算计算索引占比。
-- **记忆健康看板**：同一区块下方是一张**只读**看板——记忆页数 / index 路由数 / 记忆字数、访问新鲜度条形图（今天 / ≤7 / ≤30 / ≤90 / >90 天）、四项体检结论（index 链接、孤儿页、frontmatter、新鲜度）与健康分、陈旧页候选、最近 5 条动态。数据来自新增的 `GET /api/memory/insights`（每次请求实时统计，不缓存），体检口径与 `dsh-memory lint` 同源，所以看板与 CLI 不会互相打脸。
+- **记忆健康看板**：同一区块下方是一张**只读**看板——记忆页数 / index 路由数 / 记忆字数、访问新鲜度条形图（今天 / ≤7 / ≤30 / ≤90 / >90 天）、五项体检结论（index 链接、孤儿页、frontmatter、新鲜度、作废关系）与健康分、陈旧页候选、最近 5 条动态。数据来自新增的 `GET /api/memory/insights`（每次请求实时统计，不缓存），体检口径与 `dsh-memory lint` 同源，所以看板与 CLI 不会互相打脸。
 - **零构建**：纯 ESM JavaScript，无编译步骤，`pnpm add` 即用。
 
 ## 架构
@@ -65,7 +66,7 @@ dsh-plugin-memory（本插件）
 ├── lib/scaffold.js     # 记忆库脚手架（模板只建不覆盖）
 ├── lib/client.js       # 客户端半：设置面板「记忆 Memory」区块 + 记忆健康看板
 ├── skills/memory.md    # 内嵌技能的操作协议正文
-└── scripts/memory.mjs  # CLI：init/search/touch/lint/status/pack/unpack
+└── scripts/memory.mjs  # CLI：init/search/touch/lint/supersede/status/pack/unpack
 
 记忆库（用户数据，默认 ~/.memory）
 ├── SOUL.md       # 人格与灵魂（用户主导）
@@ -156,7 +157,7 @@ dsh plugin --profile <profile> add dsh-plugin-memory
 | 记忆页 / index 路由 / 记忆字数 | 记忆库规模（字数按字符计，中文不会按字节虚高 3 倍） |
 | 健康分（0–100） | 由孤儿页、缺 `salience`/`type`、陈旧页、失效 index 链接加权得出 |
 | 访问新鲜度条形图 | 今天 / ≤7 / ≤30 / ≤90 / >90 天 / 从未戳记（驱动自 `last_access` 自动戳记） |
-| 四项体检 | index 链接完整、无孤儿页、frontmatter 完整、访问新鲜度——口径与 `dsh-memory lint` 同源 |
+| 五项体检 | index 链接完整、无孤儿页、frontmatter 完整、访问新鲜度、作废关系完整——口径与 `dsh-memory lint` 同源 |
 | 陈旧页候选 | 超过 90 天或从未戳记的页面，按陈旧度排序（前 8） |
 | 最近动态 | `log.md` 最新 5 条标题 |
 
@@ -194,6 +195,7 @@ dsh-memory query --type decision --tag dsh --hot --stale [关键词]
                                       # 结构化检索：先按 frontmatter 过滤，再匹配正文
 dsh-memory checkup [--boot=N]         # 一份报告：体量/新鲜度/连接度/一致性 + 优先级行动清单
 dsh-memory lint                       # 完整性体检
+dsh-memory supersede <旧页> <新页>     # 作废旧结论：写 invalid_at + superseded_by，并记 log
 dsh-memory doctor                     # 环境体检：脚手架 / 孤儿页 / git / boot 预算，并给出修复命令
 dsh-memory status                     # 健康概览（含陈旧页统计）
 dsh-memory pack [out.tar.gz]          # 打包导出（含 manifest）

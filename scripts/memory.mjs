@@ -11,6 +11,7 @@
  *   dsh-memory index [--check|--write|--sync-frontmatter]
  *                                          # index routing table: drift / rewrite / import summaries
  *   dsh-memory lint                        # integrity check (index vs files, orphans, log format)
+ *   dsh-memory supersede <old> <new>       # close a page's validity window and name its successor
  *   dsh-memory status                      # health summary (page counts, sizes, staleness, last modified)
  *   dsh-memory pack [out.tar.gz]           # export a portable archive + manifest
  *   dsh-memory unpack <archive> [--force]  # restore from an archive
@@ -27,7 +28,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir, homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { ensureMemoryScaffold } from '../lib/scaffold.js'
-import { touchPages, accessSummary, today, listPagesWithMeta } from '../lib/pages.js'
+import { touchPages, accessSummary, today, listPagesWithMeta, parseValidity, validityIssues } from '../lib/pages.js'
 import { planIndex, applyIndex, indexIssues, syncDeclaredSummaries, INDEX_LINE_MAX } from '../lib/index-page.js'
 import { buildMemoryGraph, suggestLinks } from '../lib/graph.js'
 import { runCheckup, formatCheckup, hasWork } from '../lib/checkup.js'
@@ -203,6 +204,7 @@ function cmdLint(store) {
   for (const p of ps) {
     if (!inIndex.has(p)) problems.push(`orphan page not in index.md: ${p}`)
   }
+  const knownPaths = new Set(ps)
   for (const p of ps) {
     const fm = parseFrontmatter(readFileSync(join(store, p), 'utf8'))
     for (const k of ['title', 'date', 'type', 'salience']) {
@@ -211,6 +213,10 @@ function cmdLint(store) {
     if (fm.salience && !['1', '2', '3'].includes(fm.salience)) {
       problems.push(`${p}: salience must be 1|2|3, got "${fm.salience}"`)
     }
+    // Validity windows: a half-written supersession is worse than none, because
+    // the store then claims a successor that nothing points at (or closes a page
+    // without saying where it went). Same helper the dashboard uses.
+    problems.push(...validityIssues(p, parseValidity(fm), knownPaths))
   }
   // Routing-table discipline: a line that has drifted from its page, or grown
   // past the cap, is a lint failure — not a style preference. The index is
@@ -229,6 +235,103 @@ function cmdLint(store) {
 }
 
 /**
+ * Rewrite selected frontmatter keys in place, leaving every other byte alone.
+ *
+ * Returns `undefined` when the page has no frontmatter block: inventing one
+ * would be writing memory, which this CLI does not do on its own.
+ *
+ * @param {string} text page content
+ * @param {Record<string, string>} updates key -> value (values are written raw)
+ * @returns {string | undefined}
+ */
+function writeFrontmatterFields(text, updates) {
+  if (!text.startsWith('---')) return undefined
+  const end = text.indexOf('\n---', 3)
+  if (end < 0) return undefined
+  const lines = text.slice(3, end).split('\n')
+  const inserted = []
+  for (const [key, value] of Object.entries(updates)) {
+    const line = `${key}: ${value}`
+    const at = lines.findIndex((candidate) => new RegExp(`^${key}\\s*:`).test(candidate))
+    if (at >= 0) lines[at] = line
+    else inserted.push(line)
+  }
+  if (inserted.length > 0) {
+    // New keys land next to `date:` as one block, in the order they were asked
+    // for, so the window reads top-down: when it was written, when it was true,
+    // when it stopped being true, and what replaced it.
+    const dateAt = lines.findIndex((candidate) => /^date\s*:/.test(candidate))
+    lines.splice(dateAt >= 0 ? dateAt + 1 : lines.length, 0, ...inserted)
+  }
+  return `---${lines.join('\n')}${text.slice(end)}`
+}
+
+/**
+ * `dsh-memory supersede <old> <new>` — close one page's validity window and
+ * name the page that took over, in a single step.
+ *
+ * The manual alternative is editing frontmatter and hoping both halves of the
+ * relationship end up right; a one-sided edit is worse than none, because the
+ * store then either closes a page without saying where it went or names a
+ * successor the dates deny. Only the old page is written: `valid_from` defaults
+ * to its own `date`, and the reverse direction is derived from `superseded_by`,
+ * so each relationship keeps exactly one source of truth.
+ */
+function cmdSupersede(store, args) {
+  const flags = args.filter((a) => a.startsWith('--'))
+  const positional = args.filter((a) => !a.startsWith('--'))
+  const dateArg = flags.find((f) => f.startsWith('--date='))?.slice('--date='.length)
+  const date = dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg) ? dateArg : today()
+  if (positional.length !== 2) {
+    fail('usage: dsh-memory supersede <old-page> <new-page> [--date=YYYY-MM-DD]')
+  }
+
+  const normalize = (input) => {
+    const withExt = input.endsWith('.md') ? input : `${input}.md`
+    return relative(store, resolve(store, withExt)).split(sep).join('/')
+  }
+  const oldPath = normalize(positional[0])
+  const newPath = normalize(positional[1])
+
+  for (const [label, rel] of [['old', oldPath], ['new', newPath]]) {
+    if (rel.startsWith('..')) fail(`${label} page is outside the store: ${rel}`)
+    if (META.has(basename(rel))) fail(`${label} page is a meta file, not a memory page: ${rel}`)
+    if (!existsSync(join(store, rel))) fail(`${label} page does not exist: ${rel}`)
+  }
+  if (oldPath === newPath) fail('old and new page are the same file')
+
+  const oldText = readFileSync(join(store, oldPath), 'utf8')
+  const newText = readFileSync(join(store, newPath), 'utf8')
+  const oldValidity = parseValidity(parseFrontmatter(oldText))
+  const newValidity = parseValidity(parseFrontmatter(newText))
+  if (newValidity.superseded) {
+    fail(`new page is itself superseded (invalid_at: ${newValidity.invalidAt}) — supersede to a live page: ${newPath}`)
+  }
+
+  const next = writeFrontmatterFields(oldText, { invalid_at: date, superseded_by: newPath })
+  if (next === undefined) fail(`${oldPath}: no frontmatter block to write into`)
+  if (next === oldText) {
+    console.log(`no change — ${oldPath} already closed on ${date} by ${newPath}`)
+    return
+  }
+  writeFileSync(join(store, oldPath), next, 'utf8')
+
+  // log.md is append-only, and lint checks the `## [YYYY-MM-DD] kind | title`
+  // shape, so the entry is written in exactly that form.
+  const logPath = join(store, 'log.md')
+  const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : ''
+  const separator = log.length === 0 || log.endsWith('\n') ? '' : '\n'
+  writeFileSync(logPath, `${log}${separator}## [${date}] supersede | ${oldPath} → ${newPath}\n`, 'utf8')
+
+  if (oldValidity.superseded) {
+    console.log(`note: ${oldPath} was already closed on ${oldValidity.invalidAt}${oldValidity.supersededBy ? ` by ${oldValidity.supersededBy}` : ''} — rewritten`)
+  }
+  console.log(`superseded ${oldPath}`)
+  console.log(`  → ${newPath} (from ${date})`)
+  console.log('已写入 invalid_at + superseded_by，并在 log.md 记了一笔。')
+}
+
+/**
  * Relationship report: what the graph looks like, and (with `--suggest`) who
  * each under-connected page should probably cite. Suggestion only — the write
  * stays with the agent, per the project's "no automatic rewrites" rule.
@@ -236,7 +339,8 @@ function cmdLint(store) {
 function cmdGraph(store, args) {
   const graph = buildMemoryGraph(store, { includeSuggestions: args.includes('--suggest') })
   const { stats } = graph
-  console.log(`graph: ${stats.pages} 页 · ${stats.links} 条页间互链 · ${stats.tagEdges} 条共享 tag · ${stats.indexLinks} 条索引路由`)
+  const supersedeNote = stats.supersedeEdges > 0 ? ` · ${stats.supersedeEdges} 条件作废关系` : ''
+  console.log(`graph: ${stats.pages} 页 · ${stats.links} 条页间互链 · ${stats.tagEdges} 条共享 tag · ${stats.indexLinks} 条索引路由${supersedeNote}`)
   if (stats.isolated.length > 0) {
     console.log(`孤立页（连索引之外没有任何关系）：${stats.isolated.length} 个`)
     for (const path of stats.isolated) console.log(`  · ${path}`)
@@ -612,6 +716,7 @@ if (args[0] === '--self-test') {
   index [--check|--write|--sync-frontmatter]
                            index routing table: report drift / rewrite / import summaries
   lint                     integrity check
+  supersede <old> <new>    close a page (invalid_at + superseded_by) and log the replacement
   doctor                   environment check-up: scaffold, orphans, git, boot budget + fixes
   status                   health summary
   pack [out.tar.gz]        export portable archive + manifest
@@ -626,6 +731,7 @@ Store: $MEMORY_DIR or ./.memory or ~/.memory (current: ${store})`
     case 'query': cmdQuery(store, args.slice(1)); break
     case 'index': cmdIndex(store, args.slice(1)); break
     case 'lint': cmdLint(store); break
+    case 'supersede': cmdSupersede(store, args.slice(1)); break
     case 'doctor': cmdDoctor(store); break
     case 'status': cmdStatus(store); break
     case 'pack': cmdPack(store, args[1]); break

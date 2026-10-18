@@ -2,6 +2,42 @@
 
 所有记录跟随 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格；版本号与 `package.json` 保持一致。
 
+## [Unreleased] — 本地分支（基于 0.10.0）
+
+> 本地分支，不发布到 npm。上游是 [LittleBlackTong/dsh-plugin-memory](https://github.com/LittleBlackTong/dsh-plugin-memory)。
+
+### Added
+
+- **有效期与作废关系：记忆终于能记住「这条结论后来被推翻了」**。借鉴时序知识图谱（Graphiti / Zep 的 bi-temporal 思路）里唯一值得抄的那部分，但**不引任何依赖、不起图数据库**——仍然只是 markdown 里三个可选字段：
+
+  | 字段 | 含义 |
+  |---|---|
+  | `valid_from` | 从哪天成立（缺省视为页面的 `date`） |
+  | `invalid_at` | 哪天失效 / 被推翻 |
+  | `superseded_by` | 被哪一页取代（库内相对路径） |
+
+  旧页**不删、不覆盖**，留在库里当证据。`valid_from` 有缺省值、反向关系由 `superseded_by` 推出，所以每条关系只有一个真相来源。
+
+- **`dsh-memory supersede <旧页> <新页>`**：一条命令写全作废关系——只改旧页（把 `invalid_at` + `superseded_by` 插在 `date:` 之后，保持窗口「写于何时 → 何时成立 → 何时失效 → 被谁取代」的阅读顺序），并往 `log.md` 追加 `## [日期] supersede | 旧 → 新`。拒绝：新旧同页、指向已作废的页、目标页没有 frontmatter、路径越出记忆库。
+
+- **图上的作废边**：`graph.js` 新增第五种边 `supersede`——**有向**（旧 → 新），从 frontmatter 派生而不是从正文链接推导；`stats.supersedeEdges` 计数，`dsh-memory graph` 在存在时显示。
+
+- **`lint` / `checkup` / 看板共用一套校验**（`pages.js` 的 `validityIssues`）：指向不存在的页、`invalid_at` 却没有 `superseded_by`、有 `superseded_by` 却没有 `invalid_at`、`valid_from` 晚于 `invalid_at`。看板新增第五项体检「作废关系完整」。
+
+- **已作废的页面不再被当成「陈旧」**：它们是有意归档的历史，不该在新鲜度里被反复提醒（看板与 `checkup` 都已排除）。
+
+### Changed
+
+- 面板图谱：作废边画成**琥珀色带箭头的虚线**（箭头停在取代页圆点之外，不会被盖住），作废节点淡化 + 琥珀虚线圈，悬停提示显示「已作废 · 日期 → 取代页」；图例与副标题随之增加计数。
+- `MEMORY.md` 模板新增三个字段说明与「推翻旧结论不要覆盖」的操作规则；两个 README 与 CLI 帮助同步。
+
+### Tests
+
+- `test/validity.test.mjs` 新增 6 条：字段解析、四类关系问题、有向边、CLI 写全、拒绝作废链、看板计数与「不再算陈旧」。
+- `test/graph-card.test.mjs` 新增 2 条：箭头与 `<marker>` 定义、无作废时不产生多余 DOM。
+- `test/insights-route.test.mjs` 跟着第五项体检更新。
+- 全量 **189/189 通过**；`--self-test` 通过。
+
 ## [0.10.0] - 2026-10-16
 
 ### Added
